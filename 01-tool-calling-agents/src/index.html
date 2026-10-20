@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Agent</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --panel: #ffffff; --text: #1f1f1f; --muted: #777;
+    --border: #e3e1dc; --accent: #c2410c; --user: #fde7d9; --tool: #f1efea;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161616; --panel: #1f1f1f; --text: #ececec; --muted: #9a9a9a;
+      --border: #333; --accent: #fb923c; --user: #3a2618; --tool: #2a2a2a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main {
+    max-width: 760px; margin: 0 auto; padding: 16px;
+    height: 100dvh; display: flex; flex-direction: column; gap: 12px;
+  }
+  header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  h1 { font-size: 18px; margin: 0 auto 0 0; }
+  select, button, textarea {
+    font: inherit; color: inherit; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
+  }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button:disabled { opacity: .5; cursor: wait; }
+  #log {
+    flex: 1; overflow-y: auto; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 12px; padding: 16px;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .msg { max-width: 85%; padding: 10px 14px; border-radius: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .user { align-self: flex-end; background: var(--user); }
+  .assistant { align-self: flex-start; background: var(--bg); }
+  .error { align-self: flex-start; color: #dc2626; border: 1px solid #dc2626; }
+  .tool {
+    align-self: flex-start; font: 12px/1.4 ui-monospace, Menlo, monospace;
+    background: var(--tool); color: var(--muted); padding: 6px 10px; border-radius: 6px; overflow-wrap: anywhere;
+  }
+  .hint { color: var(--muted); margin: auto; text-align: center; }
+  form { display: flex; gap: 8px; }
+  textarea { flex: 1; resize: none; height: 64px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>AI Agent · recepty a výpočty</h1>
+    <select id="model" aria-label="Model"></select>
+    <button id="reset" type="button">Nový chat</button>
+  </header>
+  <div id="log" aria-live="polite"></div>
+  <form id="form">
+    <textarea id="input" placeholder="Napíš otázku… (Enter = odoslať, Shift+Enter = nový riadok)" aria-label="Správa"></textarea>
+    <button class="primary" id="send">Odoslať</button>
+  </form>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  let config = null;
+  let history = []; // chat_history: [{role, content}] - sent with every request
+
+  function add(cls, text) {
+    const el = document.createElement("div");
+    el.className = cls;
+    el.textContent = text; // textContent, never innerHTML - LLM output is untrusted
+    $("log").append(el);
+    $("log").scrollTop = $("log").scrollHeight;
+    return el;
+  }
+
+  function reset() {
+    history = [];
+    $("log").replaceChildren();
+    add("hint", config ? config.hint : "");
+  }
+
+  async function init() {
+    try {
+      const res = await fetch("/api/config");
+      config = await res.json();
+      if (!res.ok) throw new Error(config.error);
+    } catch (e) {
+      add("msg error", "Nepodarilo sa načítať konfiguráciu (beží LiteLLM?). Obnov stránku o chvíľu.\n" + e.message);
+      return;
+    }
+    for (const m of config.models) $("model").add(new Option(m, m));
+    reset();
+  }
+
+  async function send(e) {
+    e.preventDefault();
+    const text = $("input").value.trim();
+    if (!text || !config) return;
+    if (!history.length) $("log").replaceChildren();
+    $("input").value = "";
+    history.push({ role: "user", content: text });
+    add("msg user", text);
+    const typing = add("msg assistant", "…");
+    $("send").disabled = true;
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: $("model").value, messages: history }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      typing.remove();
+      for (const t of data.tools) add("tool", `🔧 ${t.name}(${t.args}) → ${JSON.stringify(t.result)}`);
+      add("msg assistant", data.reply);
+      history.push({ role: "assistant", content: data.reply });
+    } catch (err) {
+      typing.remove();
+      history.pop(); // drop the unanswered question so history stays valid
+      add("msg error", err.message);
+    } finally {
+      $("send").disabled = false;
+      $("input").focus();
+    }
+  }
+
+  $("form").addEventListener("submit", send);
+  $("input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) send(e);
+  });
+  $("reset").addEventListener("click", reset);
+  init();
+</script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+[project]
+name = "tool-calling-agents"
+version = "0.1.0"
+description = "Two cheap LLM agents with tool calling via LiteLLM"
+requires-python = ">=3.12"
+dependencies = [
+    "openai>=2.20.0",
+    "python-dotenv>=1.0.1",
+]

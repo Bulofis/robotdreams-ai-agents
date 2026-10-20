@@ -1,0 +1,37 @@
+# Explicit project name - otherwise Compose derives "docker" from this folder's name
+# and every project with a docker/ folder shares the same containers.
+name: tool-calling-agents
+
+services:
+  # -----------------------------------------------------------------
+  # LiteLLM proxy: one OpenAI-compatible endpoint in front of all providers.
+  # Only this container gets the provider API keys.
+  # -----------------------------------------------------------------
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    env_file:
+      - ../.env
+    volumes:
+      - ./litellm/litellm_config.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    ports:
+      - "127.0.0.1:4000:4000" # for the CLI (make ask) from the host
+    restart: unless-stopped
+
+  # -----------------------------------------------------------------
+  # App: web chat + agents, talks to LiteLLM over the compose network.
+  # -----------------------------------------------------------------
+  app:
+    build:
+      context: ..
+      dockerfile: docker/app/Dockerfile
+    environment:
+      LITELLM_BASE_URL: http://litellm:4000
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}
+    volumes:
+      - ../src:/app/src:ro # code changes need only `make restart`, no rebuild
+    ports:
+      - "127.0.0.1:8080:8000"
+    depends_on:
+      - litellm
+    restart: unless-stopped
