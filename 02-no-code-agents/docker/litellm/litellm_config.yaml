@@ -1,0 +1,26 @@
+# Model aliases the agents can use. Model names and API keys come from .env,
+# so switching to another model needs only an .env change and `make restart`.
+model_list:
+  - model_name: anthropic
+    litellm_params:
+      model: os.environ/ANTHROPIC_MODEL
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: openai
+    litellm_params:
+      model: os.environ/OPENAI_MODEL
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: gemini
+    litellm_params:
+      model: os.environ/GEMINI_MODEL
+      api_key: os.environ/GEMINI_API_KEY
+
+  - model_name: openrouter
+    litellm_params:
+      model: os.environ/OPENROUTER_MODEL
+      api_key: os.environ/OPENROUTER_API_KEY
+
+litellm_settings:
+  # Each provider gets only the parameters it understands.
+  drop_params: true

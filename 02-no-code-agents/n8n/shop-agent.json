@@ -1,0 +1,230 @@
+{
+  "id": "shopAgentWf00001",
+  "name": "Shop Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "public": true,
+        "mode": "hostedChat",
+        "initialMessages": "Ahoj!\nSom asistent e-shopu s outdoorovým vybavením. Opýtaj sa ma na produkty, zákazníkov alebo objednávky.",
+        "options": {
+          "title": "Shop Agent",
+          "subtitle": "Agent nad databázou e-shopu (PostgreSQL) cez LiteLLM",
+          "inputPlaceholder": "Napíš otázku..."
+        }
+      },
+      "id": "5f0c1d6e-2a47-4c0b-9d3e-8b1f6a7c2e01",
+      "name": "When chat message received",
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "shop-agent"
+    },
+    {
+      "parameters": {
+        "options": {
+          "systemMessage": "Si dátový asistent slovenského e-shopu s outdoorovým vybavením. Dáta sú v PostgreSQL databáze shop. Odpovedaj po slovensky, stručne a vecne.\n\nTabuľky:\n- products(id, sku, name, description, category, brand, price, stock_quantity, rating, review_count, is_active)\n- users(id, email, first_name, last_name, city, country, is_premium, registration_date)\n- orders(id, order_number, user_id, order_date, status, payment_method, subtotal, shipping_cost, total_amount, shipping_city, shipping_country)\n- order_items(id, order_id, product_id, product_name, quantity, unit_price, total_price)\n- order_notes(id, order_id, note, created_at) -- jediná tabuľka, do ktorej smieš zapisovať\n\nFakty o dátach:\n- Ceny sú v EUR. orders.total_amount = subtotal + shipping_cost.\n- orders.status má hodnoty pending (čaká na platbu), paid (zaplatená), shipped (odoslaná), delivered (doručená), cancelled (zrušená). Zrušené objednávky nepočítaj do tržieb ani do útrat zákazníkov.\n- orders.order_number má tvar OBJ-2026-0001.\n- products.category má hodnoty Stany, Spacáky, Batohy, Obuv, Oblečenie, Varenie, Doplnky.\n- Vypredaný produkt má stock_quantity = 0, produkt vyradený z ponuky má is_active = false.\n\nPravidlá:\n- Na každú otázku o dátach zavolaj nástroj \"Run SQL query\" s JEDNÝM príkazom SELECT pre PostgreSQL, bez bodkočiarky na konci. Výsledok je obmedzený na 50 riadkov, preto filtruj, agreguj a zoraďuj priamo v SQL.\n- Ak si nie si istý tabuľkou alebo stĺpcom, najprv sa pozri do information_schema.columns.\n- Poznámku k objednávke pridaj nástrojom \"Add order note\". Najprv si cez SQL over, že objednávka existuje. Iné zmeny dát nie sú možné, povedz to používateľovi.\n- Na výpočty mimo SQL (percentá, zľavy, prepočty) použi nástroj \"Calculator\", nepočítaj spamäti.\n- Pri otázkach viazaných na čas (tento mesiac, posledných 30 dní) vychádzaj z CURRENT_DATE v SQL.\n- Nikdy si dáta nevymýšľaj. Ak dopyt nevráti žiadne riadky, povedz to.\n- Sumy uvádzaj v EUR na dve desatinné miesta.",
+          "maxIterations": 10
+        }
+      },
+      "id": "a3d9e2b4-7c15-4f68-8e0a-1d2c3b4a5f02",
+      "name": "AI Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        260,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "id",
+          "value": "anthropic"
+        },
+        "responsesApiEnabled": false,
+        "options": {}
+      },
+      "id": "c7b1f0a2-3e94-4d5c-a6b8-2f3e4d5c6b03",
+      "name": "LiteLLM Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        100,
+        240
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "litellmCred00001",
+          "name": "LiteLLM"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sessionIdType": "fromInput",
+        "contextWindowLength": 10
+      },
+      "id": "e4a6c8d0-1b23-4a5f-9c7e-3a4b5c6d7e04",
+      "name": "Simple Memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.4,
+      "position": [
+        260,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "Spustí JEDEN čítací príkaz SELECT (PostgreSQL) nad databázou e-shopu a vráti riadky, najviac 50.",
+        "operation": "executeQuery",
+        "query": "=SELECT * FROM (\n{{ $fromAI('sql_query', 'Jeden príkaz SELECT pre PostgreSQL, bez bodkočiarky na konci', 'string') }}\n) AS result\nLIMIT 50",
+        "options": {}
+      },
+      "id": "f1e2d3c4-b5a6-4978-8a9b-4b5c6d7e8f05",
+      "name": "Run SQL query",
+      "type": "n8n-nodes-base.postgresTool",
+      "typeVersion": 2.8,
+      "position": [
+        420,
+        240
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "shopPgCred000001",
+          "name": "Shop Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "Pridá poznámku k existujúcej objednávke do tabuľky order_notes. Je to jediný zápis, ktorý agent smie spraviť.",
+        "operation": "executeQuery",
+        "query": "INSERT INTO order_notes (order_id, note)\nVALUES ($1, $2)\nRETURNING id, order_id, note, created_at;",
+        "options": {
+          "queryReplacement": "={{ [ $fromAI('order_id', 'Číselné ID objednávky zo stĺpca orders.id', 'number'), $fromAI('note', 'Text poznámky, najviac 500 znakov', 'string') ] }}"
+        }
+      },
+      "id": "0a1b2c3d-4e5f-4061-9b2c-5c6d7e8f9a06",
+      "name": "Add order note",
+      "type": "n8n-nodes-base.postgresTool",
+      "typeVersion": 2.8,
+      "position": [
+        580,
+        240
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "shopPgCred000001",
+          "name": "Shop Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "1b2c3d4e-5f60-4172-8c3d-6d7e8f9a0b07",
+      "name": "Calculator",
+      "type": "@n8n/n8n-nodes-langchain.toolCalculator",
+      "typeVersion": 1,
+      "position": [
+        740,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Shop Agent\n\nAgent nad databázou e-shopu (PostgreSQL). Model volá cez LiteLLM proxy.\n\n### Skús sa opýtať\n\n- Ktorých 5 produktov je najdrahších?\n- Ktorý zákazník minul najviac a na koľkých objednávkach?\n- Ktoré produkty sú vypredané?\n- Koľko by stála objednávka OBJ-2026-0007 po zľave 15 %?\n- Pridaj k objednávke 12 poznámku: zákazník prosí doručenie po 16:00.\n\n### Ako to funguje\n\n- **Run SQL query**: SQL píše model. Nástroj ho obalí do `SELECT * FROM (...) LIMIT 50` a pripája sa rolou `shop_agent`, ktorá smie iba čítať.\n- **Add order note**: jediný zápis, iba do tabuľky `order_notes`.\n- **Calculator**: výpočty mimo SQL.\n- **Simple Memory**: posledných 10 správ konverzácie.",
+        "height": 520,
+        "width": 460
+      },
+      "id": "2c3d4e5f-6071-4283-9d4e-7e8f9a0b1c08",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -540,
+        -120
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When chat message received": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LiteLLM Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Simple Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run SQL query": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add order note": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculator": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": []
+}

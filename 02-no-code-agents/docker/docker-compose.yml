@@ -1,0 +1,136 @@
+# Explicit project name - otherwise Compose derives "docker" from this folder's name
+# and every project with a docker/ folder shares the same containers.
+name: no-code-agents
+
+services:
+  # -----------------------------------------------------------------
+  # LiteLLM proxy: one OpenAI-compatible endpoint in front of all providers.
+  # Only this container gets the provider API keys. Not published to the host,
+  # both agents reach it over the compose network.
+  # -----------------------------------------------------------------
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-anthropic/claude-haiku-5-5}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-openai/gpt-5.4-nano}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini/gemini-2.5-flash}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-openrouter/google/gemma-4-31b-it:free}
+    volumes:
+      - ./litellm/litellm_config.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    # The image has no healthcheck and no curl. Without this, `up --wait` returns
+    # before the proxy listens and the first question fails with ECONNREFUSED.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:4000/health/liveliness')"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    restart: unless-stopped
+
+  # -----------------------------------------------------------------
+  # PostgreSQL: the shop database. init.sql runs once, on an empty volume,
+  # and creates the schema, the data and the least-privilege role shop_agent.
+  # Not published to the host.
+  # -----------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: shop
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      AGENT_DB_PASSWORD: ${AGENT_DB_PASSWORD:?Set AGENT_DB_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d shop"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  # -----------------------------------------------------------------
+  # n8n: agent variant 1. The workflow and its credentials are imported
+  # by docker/n8n/import.sh (make init), the secrets come from the environment.
+  # -----------------------------------------------------------------
+  n8n:
+    image: n8nio/n8n:2.45.4
+    environment:
+      # n8n listens on its default 5678 inside (5679 inside is its task broker),
+      # these two make the URLs it generates point at the published port.
+      WEBHOOK_URL: http://localhost:5679/
+      N8N_EDITOR_BASE_URL: http://localhost:5679/
+      N8N_SECURE_COOKIE: "false" # plain http on localhost
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "true" # workflows cannot read the secrets below
+      GENERIC_TIMEZONE: Europe/Bratislava
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}
+      AGENT_DB_PASSWORD: ${AGENT_DB_PASSWORD:?Set AGENT_DB_PASSWORD in .env}
+      N8N_OWNER_EMAIL: ${N8N_OWNER_EMAIL:-admin@example.com}
+      N8N_OWNER_PASSWORD: ${N8N_OWNER_PASSWORD:?Set N8N_OWNER_PASSWORD in .env}
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n/import.sh:/import/import.sh:ro
+      - ../n8n:/import/workflows:ro
+    ports:
+      - "127.0.0.1:5679:5678" # 5678 on the host is often taken by another n8n
+    depends_on:
+      postgres:
+        condition: service_healthy
+      litellm:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5678/healthz/readiness >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    restart: unless-stopped
+
+  # -----------------------------------------------------------------
+  # LangFlow: agent variant 2. Every *.json in ../langflow is loaded at startup.
+  # The Agent component uses the OpenAI provider, pointed at LiteLLM by
+  # OPENAI_BASE_URL, so no provider key ever reaches this container.
+  # -----------------------------------------------------------------
+  langflow:
+    image: langflowai/langflow:1.13.0
+    environment:
+      LANGFLOW_AUTO_LOGIN: "true"
+      LANGFLOW_SKIP_AUTH_AUTO_LOGIN: "true"
+      LANGFLOW_ALLOW_CUSTOM_COMPONENTS: "true" # the flow carries its own PostgreSQL component
+      LANGFLOW_CONFIG_DIR: /app/langflow
+      LANGFLOW_SAVE_DB_IN_CONFIG_DIR: "true"
+      LANGFLOW_LOAD_FLOWS_PATH: /flows
+      LANGFLOW_SSRF_ALLOWED_HOSTS: litellm
+      DO_NOT_TRACK: "true"
+      OPENAI_API_KEY: ${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}
+      OPENAI_BASE_URL: http://litellm:4000/v1
+      SHOP_DATABASE_URL: postgresql://shop_agent:${AGENT_DB_PASSWORD:?Set AGENT_DB_PASSWORD in .env}@postgres:5432/shop
+    volumes:
+      - langflow_data:/app/langflow
+      - ../langflow:/flows:ro
+    ports:
+      - "127.0.0.1:7860:7860"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      litellm:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7860/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  n8n_data:
+  langflow_data:
